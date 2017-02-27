@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/swarm/api"
+	"github.com/ethereum/go-ethereum/swarm/network"
 	"github.com/ethereum/go-ethereum/swarm/storage"
 	"github.com/rs/cors"
 )
@@ -41,8 +42,8 @@ const (
 )
 
 var (
-	// accepted protocols: bzz (traditional), bzzi (immutable) and bzzr (raw)
-	bzzPrefix       = regexp.MustCompile("^/+bzz[ir]?:/+")
+	// accepted protocols: bzz (traditional), bzzi (immutable), bzzr (raw) and bzzs (stream)
+	bzzPrefix       = regexp.MustCompile("^/+bzz[irs]?:/+")
 	trailingSlashes = regexp.MustCompile("/+$")
 	rootDocumentUri = regexp.MustCompile("^/+bzz[i]?:/+[^/]+$")
 	// forever         = func() time.Time { return time.Unix(0, 0) }
@@ -102,7 +103,7 @@ func handler(w http.ResponseWriter, r *http.Request, a *api.Api) {
 	//	}
 	log.Debug(fmt.Sprintf("HTTP %s request URL: '%s', Host: '%s', Path: '%s', Referer: '%s', Accept: '%s'", r.Method, r.RequestURI, requestURL.Host, requestURL.Path, r.Referer(), r.Header.Get("Accept")))
 	uri := requestURL.Path
-	var raw, nameresolver bool
+	var raw, stream, nameresolver bool
 	var proto string
 
 	// HTTP-based URL protocol handler
@@ -121,6 +122,7 @@ func handler(w http.ResponseWriter, r *http.Request, a *api.Api) {
 	}
 	if len(proto) > 4 {
 		raw = proto[1:5] == "bzzr"
+		stream = proto[1:5] == "bzzs"
 		nameresolver = proto[1:5] != "bzzi"
 	}
 
@@ -130,6 +132,28 @@ func handler(w http.ResponseWriter, r *http.Request, a *api.Api) {
 
 	switch {
 	case r.Method == "POST" || r.Method == "PUT":
+		if stream {
+			path = trailingSlashes.ReplaceAllString(path, "")
+			streamConn, id, err := a.StreamWriter(path)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Error creating stream writer: %s", err), http.StatusBadRequest)
+				return
+			}
+			defer streamConn.Close()
+			w.Header().Set("Connection", "upgrade")
+			w.Header().Set("Upgrade", "ethereum-swatch/0")
+			w.Header().Set("Ethereum-Swatch-Uri", fmt.Sprintf("bzzs:/%s", id))
+			w.WriteHeader(http.StatusSwitchingProtocols)
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				log.Error(fmt.Sprintf("Error hijacking Swatch stream connection: %s", err))
+				return
+			}
+			defer conn.Close()
+			io.Copy(streamConn, conn)
+			return
+		}
+
 		if r.Header.Get("content-length") == "" {
 			http.Error(w, "Missing Content-Length header in request.", http.StatusBadRequest)
 			return
@@ -171,6 +195,11 @@ func handler(w http.ResponseWriter, r *http.Request, a *api.Api) {
 			}
 		}
 	case r.Method == "DELETE":
+		if stream {
+			http.Error(w, "DELETE to bzzs stream protocol not allowed.", http.StatusBadRequest)
+			return
+		}
+
 		if raw {
 			http.Error(w, "No DELETE to /raw allowed.", http.StatusBadRequest)
 			return
@@ -193,6 +222,32 @@ func handler(w http.ResponseWriter, r *http.Request, a *api.Api) {
 			http.Error(w, "Empty path not allowed", http.StatusBadRequest)
 			return
 		}
+
+		if stream {
+			streamConn, err := a.StreamReader(path, nameresolver)
+			if err != nil {
+				if err == network.ErrStreamNotFound {
+					http.NotFound(w, r)
+					return
+				}
+				log.Error(fmt.Sprintf("Error initiating stream: %s", err))
+				http.Error(w, "Error initiating stream", http.StatusInternalServerError)
+				return
+			}
+			defer streamConn.Close()
+			w.Header().Set("Connection", "upgrade")
+			w.Header().Set("Upgrade", "ethereum-swatch/0")
+			w.WriteHeader(http.StatusSwitchingProtocols)
+			clientConn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				log.Error(fmt.Sprintf("Error hijacking Swatch stream connection: %s", err))
+				return
+			}
+			defer clientConn.Close()
+			io.Copy(clientConn, streamConn)
+			return
+		}
+
 		if raw {
 			var reader storage.LazySectionReader
 			parsedurl, _ := api.Parse(path)

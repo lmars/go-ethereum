@@ -48,7 +48,7 @@ import (
 
 const (
 	Version            = 0
-	ProtocolLength     = uint64(8)
+	ProtocolLength     = uint64(12)
 	ProtocolMaxMsgSize = 10 * 1024 * 1024
 	NetworkId          = 3
 )
@@ -61,6 +61,7 @@ type bzz struct {
 	storage    StorageHandler       // handler storage/retrieval related requests coming via the bzz wire protocol
 	hive       *Hive                // the logistic manager, peerPool, routing service and peer handler
 	dbAccess   *DbAccess            // access to db storage counter and iterator for syncing
+	stream     *StreamHandler       // handler for stream connections
 	requestDb  *storage.LDBDatabase // db to persist backlog of deliveries to aid syncing
 	remoteAddr *peerAddr            // remote peers address
 	peer       *p2p.Peer            // the p2p peer object
@@ -99,7 +100,7 @@ on each peer connection
 The Run function of the Bzz protocol class creates a bzz instance
 which will represent the peer for the swarm hive and all peer-aware components
 */
-func Bzz(cloud StorageHandler, backend chequebook.Backend, hive *Hive, dbaccess *DbAccess, sp *bzzswap.SwapParams, sy *SyncParams, networkId uint64) (p2p.Protocol, error) {
+func Bzz(cloud StorageHandler, backend chequebook.Backend, hive *Hive, dbaccess *DbAccess, stream *StreamHandler, sp *bzzswap.SwapParams, sy *SyncParams, networkId uint64) (p2p.Protocol, error) {
 
 	// a single global request db is created for all peer connections
 	// this is to persist delivery backlog and aid syncronisation
@@ -115,7 +116,7 @@ func Bzz(cloud StorageHandler, backend chequebook.Backend, hive *Hive, dbaccess 
 		Version: Version,
 		Length:  ProtocolLength,
 		Run: func(p *p2p.Peer, rw p2p.MsgReadWriter) error {
-			return run(requestDb, cloud, backend, hive, dbaccess, sp, sy, networkId, p, rw)
+			return run(requestDb, cloud, backend, hive, dbaccess, stream, sp, sy, networkId, p, rw)
 		},
 	}, nil
 }
@@ -132,13 +133,14 @@ the main protocol loop that
  * whenever the loop terminates, the peer will disconnect with Subprotocol error
  * whenever handlers return an error the loop terminates
 */
-func run(requestDb *storage.LDBDatabase, depo StorageHandler, backend chequebook.Backend, hive *Hive, dbaccess *DbAccess, sp *bzzswap.SwapParams, sy *SyncParams, networkId uint64, p *p2p.Peer, rw p2p.MsgReadWriter) (err error) {
+func run(requestDb *storage.LDBDatabase, depo StorageHandler, backend chequebook.Backend, hive *Hive, dbaccess *DbAccess, stream *StreamHandler, sp *bzzswap.SwapParams, sy *SyncParams, networkId uint64, p *p2p.Peer, rw p2p.MsgReadWriter) (err error) {
 
 	self := &bzz{
 		storage:     depo,
 		backend:     backend,
 		hive:        hive,
 		dbAccess:    dbaccess,
+		stream:      stream,
 		requestDb:   requestDb,
 		peer:        p,
 		rw:          rw,
@@ -299,6 +301,42 @@ func (self *bzz) handle() error {
 			self.swap.Receive(int(req.Units), req.Promise)
 		}
 
+	case streamConnectMsg:
+		var req streamConnectMsgData
+		if err := msg.Decode(&req); err != nil {
+			return self.protoError(ErrDecode, "<-msg %v: %v", msg, err)
+		}
+		log.Debug(fmt.Sprintf("<- stream connect request: %s", req.String()))
+		self.stream.HandleStreamConnectMsg(&req, &peer{bzz: self})
+		self.lastActive = time.Now()
+
+	case streamDisconnectMsg:
+		var req streamDisconnectMsgData
+		if err := msg.Decode(&req); err != nil {
+			return self.protoError(ErrDecode, "<-msg %v: %v", msg, err)
+		}
+		log.Debug(fmt.Sprintf("<- stream disconnect request: %s", req.String()))
+		self.stream.HandleStreamDisconnectMsg(&req, &peer{bzz: self})
+		self.lastActive = time.Now()
+
+	case streamDataMsg:
+		var req streamDataMsgData
+		if err := msg.Decode(&req); err != nil {
+			return self.protoError(ErrDecode, "<-msg %v: %v", msg, err)
+		}
+		log.Trace(fmt.Sprintf("<- stream data request: %s", req.String()))
+		self.stream.HandleStreamDataMsg(&req, &peer{bzz: self})
+		self.lastActive = time.Now()
+
+	case streamErrorMsg:
+		var req streamErrorMsgData
+		if err := msg.Decode(&req); err != nil {
+			return self.protoError(ErrDecode, "<-msg %v: %v", msg, err)
+		}
+		log.Trace(fmt.Sprintf("<- stream error request: %s", req.String()))
+		self.stream.HandleStreamErrorMsg(&req, &peer{bzz: self})
+		self.lastActive = time.Now()
+
 	default:
 		// no other message is allowed
 		return fmt.Errorf("invalid message code: %v", msg.Code)
@@ -453,6 +491,32 @@ func (self *bzz) retrieve(req *retrieveRequestMsgData) error {
 // send storeRequestMsg
 func (self *bzz) store(req *storeRequestMsgData) error {
 	return self.send(storeRequestMsg, req)
+}
+
+func (self *bzz) sendStreamConnect(id StreamID) error {
+	return self.send(streamConnectMsg, &streamConnectMsgData{ID: id})
+}
+
+func (self *bzz) sendStreamDisconnect(id StreamID, clientID string) error {
+	return self.send(streamDisconnectMsg, &streamDisconnectMsgData{
+		ID:       id,
+		ClientID: clientID,
+	})
+}
+
+func (self *bzz) sendStreamData(id StreamID, clientID string, data []byte) error {
+	return self.send(streamDataMsg, &streamDataMsgData{
+		ID:       id,
+		ClientID: clientID,
+		Data:     data,
+	})
+}
+
+func (self *bzz) sendStreamError(id StreamID, err error) error {
+	return self.send(streamErrorMsg, &streamErrorMsgData{
+		ID:    id,
+		Error: err.Error(),
+	})
 }
 
 func (self *bzz) syncRequest() error {

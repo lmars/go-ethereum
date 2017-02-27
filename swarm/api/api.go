@@ -26,6 +26,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/swarm/network"
+	"github.com/ethereum/go-ethereum/swarm/network/kademlia"
 	"github.com/ethereum/go-ethereum/swarm/storage"
 )
 
@@ -39,21 +41,28 @@ type Resolver interface {
 	Resolve(string) (common.Hash, error)
 }
 
+type StreamReadWriter interface {
+	StreamReader(id network.StreamID) (io.ReadCloser, error)
+	StreamWriter(path string) (io.WriteCloser, network.StreamID, error)
+}
+
 /*
 Api implements webserver/file system related content storage and retrieval
 on top of the dpa
 it is the public interface of the dpa which is included in the ethereum stack
 */
 type Api struct {
-	dpa *storage.DPA
-	dns Resolver
+	dpa    *storage.DPA
+	stream StreamReadWriter
+	dns    Resolver
 }
 
 //the api constructor initialises
-func NewApi(dpa *storage.DPA, dns Resolver) (self *Api) {
+func NewApi(dpa *storage.DPA, stream StreamReadWriter, dns Resolver) (self *Api) {
 	self = &Api{
-		dpa: dpa,
-		dns: dns,
+		dpa:    dpa,
+		stream: stream,
+		dns:    dns,
 	}
 	return
 }
@@ -201,4 +210,19 @@ func (self *Api) Modify(uri, contentHash, contentType string, nameresolver bool)
 		return
 	}
 	return trie.hash.String(), nil
+}
+
+func (self *Api) StreamReader(uri string, nameresolver bool) (io.ReadCloser, error) {
+	addr, _, path, err := self.parseAndResolve(uri, nameresolver)
+	if err != nil {
+		return nil, err
+	}
+	return self.stream.StreamReader(network.StreamID{
+		Addr: kademlia.Address(common.BytesToHash(addr)),
+		Path: path,
+	})
+}
+
+func (self *Api) StreamWriter(path string) (io.WriteCloser, network.StreamID, error) {
+	return self.stream.StreamWriter(path)
 }

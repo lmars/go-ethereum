@@ -50,6 +50,7 @@ type Swarm struct {
 	cloud       storage.CloudStore     // procurement, cloud storage backend (can multi-cloud)
 	hive        *network.Hive          // the logistic manager
 	backend     chequebook.Backend     // simple blockchain Backend
+	stream      *network.StreamHandler
 	privateKey  *ecdsa.PrivateKey
 	corsString  string
 	swapEnabled bool
@@ -132,13 +133,16 @@ func NewSwarm(ctx *node.ServiceContext, backend chequebook.Backend, config *api.
 	// set up high level api
 	transactOpts := bind.NewKeyedTransactor(self.privateKey)
 
+	self.stream = network.NewStreamHandler(self.hive)
+	log.Debug(fmt.Sprintf("-> Stream handler"))
+
 	self.dns, err = ens.NewENS(transactOpts, config.EnsRoot, self.backend)
 	if err != nil {
 		return nil, err
 	}
 	log.Debug(fmt.Sprintf("-> Swarm Domain Name Registrar @ address %v", config.EnsRoot.Hex()))
 
-	self.api = api.NewApi(self.dpa, self.dns)
+	self.api = api.NewApi(self.dpa, self.stream, self.dns)
 	// Manifests for Smart Hosting
 	log.Debug(fmt.Sprintf("-> Web3 virtual server API"))
 
@@ -222,7 +226,16 @@ func (self *Swarm) Stop() error {
 
 // implements the node.Service interface
 func (self *Swarm) Protocols() []p2p.Protocol {
-	proto, err := network.Bzz(self.depo, self.backend, self.hive, self.dbAccess, self.config.Swap, self.config.SyncParams, self.config.NetworkId)
+	proto, err := network.Bzz(
+		self.depo,
+		self.backend,
+		self.hive,
+		self.dbAccess,
+		self.stream,
+		self.config.Swap,
+		self.config.SyncParams,
+		self.config.NetworkId,
+	)
 	if err != nil {
 		return nil
 	}
@@ -304,7 +317,7 @@ func NewLocalSwarm(datadir, port string) (self *Swarm, err error) {
 	}
 
 	self = &Swarm{
-		api:    api.NewApi(dpa, nil),
+		api:    api.NewApi(dpa, nil, nil),
 		config: config,
 	}
 

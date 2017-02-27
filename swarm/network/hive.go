@@ -256,6 +256,10 @@ func (self *Hive) removePeer(p *peer) {
 func (self *Hive) getPeers(target storage.Key, max int) (peers []*peer) {
 	var addr kademlia.Address
 	copy(addr[:], target[:])
+	return self.getAddrPeers(addr, max)
+}
+
+func (self *Hive) getAddrPeers(addr kademlia.Address, max int) (peers []*peer) {
 	for _, node := range self.kad.FindClosest(addr, max) {
 		peers = append(peers, node.(*peer))
 	}

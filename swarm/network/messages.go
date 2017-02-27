@@ -34,14 +34,18 @@ BZZ protocol Message Types and Message Data Types
 
 // bzz protocol message codes
 const (
-	statusMsg          = iota // 0x01
-	storeRequestMsg           // 0x02
-	retrieveRequestMsg        // 0x03
-	peersMsg                  // 0x04
-	syncRequestMsg            // 0x05
-	deliveryRequestMsg        // 0x06
-	unsyncedKeysMsg           // 0x07
-	paymentMsg                // 0x08
+	statusMsg           = iota // 0x01
+	storeRequestMsg            // 0x02
+	retrieveRequestMsg         // 0x03
+	peersMsg                   // 0x04
+	syncRequestMsg             // 0x05
+	deliveryRequestMsg         // 0x06
+	unsyncedKeysMsg            // 0x07
+	paymentMsg                 // 0x08
+	streamConnectMsg           // 0x09
+	streamDisconnectMsg        // 0x0a
+	streamDataMsg              // 0x0b
+	streamErrorMsg             // 0x0c
 )
 
 /*
@@ -313,5 +317,42 @@ type paymentMsgData struct {
 }
 
 func (self *paymentMsgData) String() string {
-	return fmt.Sprintf("payment for %d units: %v", self.Units, self.Promise)
+	return fmt.Sprintf("payment for %d units: %s", self.Units, self.Promise)
+}
+
+type streamConnectMsgData struct {
+	ID StreamID
+}
+
+func (self *streamConnectMsgData) String() string {
+	return fmt.Sprintf("stream connect to %s", self.ID)
+}
+
+type streamDisconnectMsgData struct {
+	ID       StreamID
+	ClientID string
+	Reason   string
+}
+
+func (self *streamDisconnectMsgData) String() string {
+	return fmt.Sprintf("stream disconnect %s from %s: %s", self.ClientID, self.ID, self.Reason)
+}
+
+type streamDataMsgData struct {
+	ID       StreamID
+	ClientID string
+	Data     []byte
+}
+
+func (self *streamDataMsgData) String() string {
+	return fmt.Sprintf("stream data from %s: %d bytes", self.ID, len(self.Data))
+}
+
+type streamErrorMsgData struct {
+	ID    StreamID
+	Error string
+}
+
+func (self *streamErrorMsgData) String() string {
+	return fmt.Sprintf("stream error from %s: %s", self.ID, self.Error)
 }
