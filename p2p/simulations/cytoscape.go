@@ -1,7 +1,7 @@
 package simulations
 
 import (
-	// "fmt"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/event"
 )
@@ -33,63 +33,68 @@ type CyUpdate struct {
 	Message []string     `json:"message"`
 }
 
-func UpdateCy(conf *CyConfig, j *Journal) (*CyUpdate, error) {
-	added := []*CyElement{}
-	removed := []string{}
-	messaged := []string{}
+func NewCyUpdate(e *event.TypeMuxEvent) (*CyUpdate, error) {
+	var update CyUpdate
 	var el *CyElement
-	update := func(e *event.TypeMuxEvent) bool {
-		entry := e.Data
-		var action string
-		if ev, ok := entry.(*NodeEvent); ok {
-			el = &CyElement{Group: "nodes", Data: &CyData{Id: ev.node.Id.Label()}}
-			action = ev.Action
-		} else if ev, ok := entry.(*MsgEvent); ok {
-			msg := ev.msg
-			id := ConnLabel(msg.One, msg.Other)
-			var source, target string
-			source = msg.One.Label()
-			target = msg.Other.Label()
-			el = &CyElement{Group: "msgs", Data: &CyData{Id: id, Source: source, Target: target}}
-			action = ev.Action
-		} else if ev, ok := entry.(*ConnEvent); ok {
-			// mutually exclusive directed edge (caller -> callee)
-			conn := ev.conn
-			id := ConnLabel(conn.One, conn.Other)
-			var source, target string
-			if conn.Reverse {
-				source = conn.Other.Label()
-				target = conn.One.Label()
-			} else {
-				source = conn.One.Label()
-				target = conn.Other.Label()
-			}
-			el = &CyElement{Group: "edges", Data: &CyData{Id: id, Source: source, Target: target}}
-			action = ev.Action
+	entry := e.Data
+	var action string
+	if ev, ok := entry.(*NodeEvent); ok {
+		el = &CyElement{Group: "nodes", Data: &CyData{Id: ev.node.Id.Label()}}
+		action = ev.Action
+	} else if ev, ok := entry.(*MsgEvent); ok {
+		msg := ev.msg
+		id := ConnLabel(msg.One, msg.Other)
+		var source, target string
+		source = msg.One.Label()
+		target = msg.Other.Label()
+		el = &CyElement{Group: "msgs", Data: &CyData{Id: id, Source: source, Target: target}}
+		action = ev.Action
+	} else if ev, ok := entry.(*ConnEvent); ok {
+		// mutually exclusive directed edge (caller -> callee)
+		conn := ev.conn
+		id := ConnLabel(conn.One, conn.Other)
+		var source, target string
+		if conn.Reverse {
+			source = conn.Other.Label()
+			target = conn.One.Label()
 		} else {
-			panic("unknown event type")
+			source = conn.One.Label()
+			target = conn.Other.Label()
 		}
-
-		switch action {
-		case "up":
-			el.Data.Up = true
-			added = append(added, el)
-		case "down":
-			el.Data.Up = false
-			removed = append(removed, el.Data.Id)
-		case "msg":
-			el.Data.Up = true
-			messaged = append(messaged, el.Data.Id)
-		default:
-			panic("unknown action")
-		}
-		return true
+		el = &CyElement{Group: "edges", Data: &CyData{Id: id, Source: source, Target: target}}
+		action = ev.Action
+	} else {
+		return nil, fmt.Errorf("unknown event type: %T", entry)
 	}
-	j.Read(update)
 
-	return &CyUpdate{
-		Add:     added,
-		Remove:  removed,
-		Message: messaged,
-	}, nil
+	switch action {
+	case "up":
+		el.Data.Up = true
+		update.Add = append(update.Add, el)
+	case "down":
+		el.Data.Up = false
+		update.Remove = append(update.Remove, el.Data.Id)
+	case "msg":
+		el.Data.Up = true
+		update.Message = append(update.Message, el.Data.Id)
+	default:
+		return nil, fmt.Errorf("unknown action: %q", action)
+	}
+
+	return &update, nil
+}
+
+func UpdateCy(conf *CyConfig, j *Journal) (*CyUpdate, error) {
+	var update CyUpdate
+	j.Read(func(e *event.TypeMuxEvent) bool {
+		u, err := NewCyUpdate(e)
+		if err != nil {
+			panic(err.Error())
+		}
+		update.Add = append(update.Add, u.Add...)
+		update.Remove = append(update.Remove, u.Remove...)
+		update.Message = append(update.Message, u.Message...)
+		return true
+	})
+	return &update, nil
 }
